@@ -59,6 +59,43 @@ void *listener_thread(void *arg) {
         int newsock = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
         if (newsock < 0) continue;
 
+        // === BAT DAU XAC THUC BAO MAT (MODULE 1) ===
+        int auth_success = 0;
+        int failed_attempts = 0;
+        Packet auth_req, auth_resp;
+
+        while (failed_attempts < 3) {
+            memset(&auth_req, 0, sizeof(Packet));
+            int n = read(newsock, &auth_req, sizeof(Packet));
+            if (n <= 0) break; // Client mat ket noi
+
+            memset(&auth_resp, 0, sizeof(Packet));
+            auth_resp.command = CMD_AUTH_LOGIN;
+
+            if (auth_req.command == CMD_AUTH_LOGIN && strcmp(auth_req.payload, AUTH_PASSWORD) == 0) {
+                auth_success = 1;
+                strcpy(auth_resp.payload, "AUTH_OK");
+                write(newsock, &auth_resp, sizeof(Packet));
+                break;
+            } else {
+                failed_attempts++;
+                snprintf(auth_resp.payload, sizeof(auth_resp.payload), "AUTH_FAIL:%d", 3 - failed_attempts);
+                write(newsock, &auth_resp, sizeof(Packet));
+            }
+        }
+
+        if (!auth_success) {
+            char log_alert[128];
+            snprintf(log_alert, sizeof(log_alert), "Security Alert: IP %s failed auth 3 times. Dropped.",
+                     inet_ntoa(client_addr.sin_addr));
+            write_log("WARNING", log_alert);
+            printf(COLOR_RED "\n[CANH BAO BAO MAT] IP %s nhap sai mat khau qua 3 lan! Ngat ket noi.\n" COLOR_RESET,
+                   inet_ntoa(client_addr.sin_addr));
+            close(newsock);
+            continue; // Bo qua, khong luu vao danh sach clients
+        }
+        // === KET THUC XAC THUC BAO MAT ===
+
         pthread_mutex_lock(&lock);
         for (int i = 0; i < MAX_CLIENTS; i++) {
             if (!clients[i].active) {
@@ -69,11 +106,11 @@ void *listener_thread(void *arg) {
                 client_count++;
 
                 char log_buf[128];
-                snprintf(log_buf, sizeof(log_buf), "Client ID %d connected from IP: %s",
+                snprintf(log_buf, sizeof(log_buf), "Client ID %d (Authenticated) from IP: %s",
                          clients[i].id, inet_ntoa(client_addr.sin_addr));
                 write_log("INFO", log_buf);
 
-                printf(COLOR_GREEN "\n[NEW CONNECTION] Client ID [%d] ket noi tu %s\n" COLOR_RESET,
+                printf(COLOR_GREEN "\n[XAC THUC THANH CONG] Client ID [%d] ket noi tu %s\n" COLOR_RESET,
                        clients[i].id, inet_ntoa(client_addr.sin_addr));
                 break;
             }

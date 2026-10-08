@@ -298,7 +298,35 @@ int main(int argc, char *argv[]) {
         perror("Connect failed");
         return 1;
     }
+    
     printf(COLOR_GREEN "Success connecting to server !\n" COLOR_RESET);
+    // === XAC THUC VOI MASTER SERVER (MODULE 1) ===
+    int authenticated = 0;
+    while (!authenticated) {
+        char pass_input[64];
+        printf(COLOR_YELLOW "Nhap mat khau xac thuc Server: " COLOR_RESET);
+        if (!fgets(pass_input, sizeof(pass_input), stdin)) break;
+        pass_input[strcspn(pass_input, "\r\n")] = 0;
+
+        Packet auth_pkt, auth_res;
+        memset(&auth_pkt, 0, sizeof(Packet));
+        auth_pkt.command = CMD_AUTH_LOGIN;
+        strncpy(auth_pkt.payload, pass_input, sizeof(auth_pkt.payload) - 1);
+
+        write(sock, &auth_pkt, sizeof(Packet));
+        if (read(sock, &auth_res, sizeof(Packet)) <= 0) {
+            printf(COLOR_RED "Server da ngat ket noi do xac thuc that bai qua 3 lan!\n" COLOR_RESET);
+            close(sock);
+            return 1;
+        }
+
+        if (strcmp(auth_res.payload, "AUTH_OK") == 0) {
+            printf(COLOR_GREEN "[XAC THUC HOAN TAT] Chuyen sang trang thai lang nghe lenh...\n" COLOR_RESET);
+            authenticated = 1;
+        } else {
+            printf(COLOR_RED "[XAC THUC THAT BAI] Sai mat khau! (%s con lai)\n" COLOR_RESET, auth_res.payload);
+        }
+    }
 
     Packet pkt;
     while (1) {
