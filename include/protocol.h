@@ -24,6 +24,10 @@
 #define THRESHOLD_CPU_WARN 75.0
 #define THRESHOLD_RAM_WARN 80.0
 
+// Mã lệnh xác thực và mật khẩu bí mật
+#define CMD_AUTH_LOGIN       99
+#define AUTH_PASSWORD        "VKU_MONITOR_2026"
+
 // Ma lenh dieu khien giua Server va Client
 enum CommandType {
     CMD_TOTAL_CLIENTS    = 1,
