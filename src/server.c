@@ -104,6 +104,34 @@ int get_target_socket(int *target_id) {
     return -1;
 }
 
+// Ham ve thanh tien trinh ASCII truc quan voi do dai 25 ky tu
+void print_ascii_bar(const char *label, double percentage) {
+    if (percentage < 0.0) percentage = 0.0;
+    if (percentage > 100.0) percentage = 100.0;
+
+    int bar_width = 25;
+    int filled = (int)((percentage / 100.0) * bar_width);
+
+    // Chon mau sac dua vao nguong phan tram
+    const char *bar_color = COLOR_GREEN;
+    if (percentage >= 80.0) {
+        bar_color = COLOR_RED;
+    } else if (percentage >= 60.0) {
+        bar_color = COLOR_YELLOW;
+    }
+
+    printf(" %-15s [", label);
+    printf("%s", bar_color);
+    for (int i = 0; i < filled; i++) {
+        printf("|");
+    }
+    printf(COLOR_RESET);
+    for (int i = filled; i < bar_width; i++) {
+        printf(".");
+    }
+    printf("] %s%5.1f%%%s\n", bar_color, percentage, COLOR_RESET);
+}
+
 int main() {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
@@ -195,13 +223,42 @@ int main() {
                 write(target_sock, &send_pkt, sizeof(Packet));
                 read(target_sock, &recv_pkt, sizeof(Packet));
 
+                // Xoa man hinh terminal de lam moi giao dien
                 printf("\033[H\033[J");
-                printf(COLOR_CYAN "=== LIVE METRICS MONITOR (Chu ky %d/5) ===\n" COLOR_RESET, i + 1);
+                printf(COLOR_BLUE "=================================================================\n" COLOR_RESET);
+                printf(COLOR_CYAN "         LIVE METRICS DASHBOARD - CLIENT [%d] (Chu ky %d/5)\n" COLOR_RESET, target_id, i + 1);
+                printf(COLOR_BLUE "=================================================================\n" COLOR_RESET);
+                
                 if (recv_pkt.is_warning) {
-                    printf(COLOR_RED "[CANH BAO NGUONG] TAI NGUYEN HE THONG VUOT MUC AN TOAN!\n" COLOR_RESET);
+                    printf(COLOR_RED "[CANH BAO NGUONG] TAI NGUYEN HE THONG DANG VUOT MUC AN TOAN!\n" COLOR_RESET);
                     write_log("WARNING", "Client resource threshold exceeded!");
                 }
+
+                // Trich xuat % CPU, RAM, Swap, Disk tu payload de ve thanh do
+                double cpu_pct = 0.0, ram_pct = 0.0, swap_pct = 0.0, disk_pct = 0.0;
+                char *p_cpu = strstr(recv_pkt.payload, "% CPU Usage");
+                if (p_cpu) sscanf(p_cpu, "%% CPU Usage : %lf", &cpu_pct);
+
+                char *p_ram = strstr(recv_pkt.payload, "% RAM Usage");
+                if (p_ram) sscanf(p_ram, "%% RAM Usage : %lf", &ram_pct);
+
+                char *p_swap = strstr(recv_pkt.payload, "% Swap Usage");
+                if (p_swap) sscanf(p_swap, "%% Swap Usage : %lf", &swap_pct);
+
+                char *p_disk = strstr(recv_pkt.payload, "% Disk Usage");
+                if (p_disk) sscanf(p_disk, "%% Disk Usage (Root /) : %lf", &disk_pct);
+
+                // Ve thanh bieu do ASCII truc quan
+                printf("\n" COLOR_BOLD "--- TAI NGUYEN TRUC QUAN (VISUAL PROGRESS) ---" COLOR_RESET "\n");
+                print_ascii_bar("CPU Load", cpu_pct);
+                print_ascii_bar("RAM Usage", ram_pct);
+                print_ascii_bar("Swap Usage", swap_pct);
+                print_ascii_bar("Disk (Root)", disk_pct);
+
+                printf("\n" COLOR_BOLD "--- CHI TIET HE THONG (RAW METRICS) ---" COLOR_RESET "\n");
                 printf("%s\n", recv_pkt.payload);
+                printf(COLOR_BLUE "=================================================================\n" COLOR_RESET);
+
                 sleep(1);
             }
             continue;
