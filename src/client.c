@@ -284,6 +284,76 @@ void execute_shell(const char *cmd, char *output) {
     pclose(fp);
 }
 
+// Ham chuyen doi Hex Little-Endian tu /proc/net/tcp sang chuoi IP:Port dang thap phan
+void parse_proc_net_addr(const char *hex_str, char *out_str, size_t out_len) {
+    unsigned int ip, port;
+    if (sscanf(hex_str, "%X:%X", &ip, &port) == 2) {
+        struct in_addr addr;
+        addr.s_addr = ip; // Da o dang Network/Little-Endian phu hop
+        snprintf(out_str, out_len, "%s:%d", inet_ntoa(addr), port);
+    } else {
+        snprintf(out_str, out_len, "Unknown");
+    }
+}
+
+// Chuyen doi State Hex thanh chuoi trang thai TCP de doc
+const char* get_tcp_state_name(int state) {
+    switch (state) {
+        case 1:  return "ESTABLISHED";
+        case 2:  return "SYN_SENT";
+        case 3:  return "SYN_RECV";
+        case 4:  return "FIN_WAIT1";
+        case 5:  return "FIN_WAIT2";
+        case 6:  return "TIME_WAIT";
+        case 7:  return "CLOSE";
+        case 8:  return "CLOSE_WAIT";
+        case 9:  return "LAST_ACK";
+        case 10: return "LISTEN";
+        case 11: return "CLOSING";
+        default: return "UNKNOWN";
+    }
+}
+
+// Ham doc va phan tich /proc/net/tcp
+void get_network_sockets(char *output) {
+    FILE *fp = fopen("/proc/net/tcp", "r");
+    if (!fp) {
+        snprintf(output, BUFFER_SIZE, "Khong the doc /proc/net/tcp\n");
+        return;
+    }
+
+    snprintf(output, BUFFER_SIZE,
+             "+-------+-------------------------+-------------------------+----------------+\n"
+             "| PROTO | LOCAL ADDRESS:PORT      | REMOTE ADDRESS:PORT     | STATE          |\n"
+             "+-------+-------------------------+-------------------------+----------------+\n");
+
+    char line[256];
+    // Bo qua dong header dau tien cua /proc/net/tcp
+    if (fgets(line, sizeof(line), fp)) {}
+
+    int count = 0;
+    while (fgets(line, sizeof(line), fp) && count < 20) {
+        char local_hex[64], remote_hex[64];
+        int state = 0;
+
+        // Dinh dang /proc/net/tcp: sl local_address rem_address st ...
+        if (sscanf(line, "%*d: %63s %63s %X", local_hex, remote_hex, &state) >= 3) {
+            char local_addr[32], remote_addr[32];
+            parse_proc_net_addr(local_hex, local_addr, sizeof(local_addr));
+            parse_proc_net_addr(remote_hex, remote_addr, sizeof(remote_addr));
+
+            char row[256];
+            snprintf(row, sizeof(row), "| TCP   | %-23s | %-23s | %-14s |\n",
+                     local_addr, remote_addr, get_tcp_state_name(state));
+            strncat(output, row, BUFFER_SIZE - strlen(output) - 1);
+            count++;
+        }
+    }
+    strncat(output, "+-------+-------------------------+-------------------------+----------------+\n",
+            BUFFER_SIZE - strlen(output) - 1);
+    fclose(fp);
+}
+
 int main(int argc, char *argv[]) {
     char *server_ip = (argc > 1) ? argv[1] : "127.0.0.1";
     int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -378,6 +448,9 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             }
+            case CMD_NET_INSPECT:
+                get_network_sockets(res.payload);
+                break;
         }
         write(sock, &res, sizeof(Packet));
     }

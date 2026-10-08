@@ -28,6 +28,9 @@
 #define CMD_AUTH_LOGIN       99
 #define AUTH_PASSWORD        "VKU_MONITOR_2026"
 
+// Mã lệnh kiểm tra mạng
+#define CMD_NET_INSPECT      11
+
 // Ma lenh dieu khien giua Server va Client
 enum CommandType {
     CMD_TOTAL_CLIENTS    = 1,

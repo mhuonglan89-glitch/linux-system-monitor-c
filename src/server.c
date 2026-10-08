@@ -45,9 +45,10 @@ void render_master_menu() {
     printf("  " COLOR_CYAN "8." COLOR_RESET " Truyen Tep Tin Xuong Client (File Transfer)\n");
     printf("  " COLOR_CYAN "9." COLOR_RESET " Che Do Dashboard Tu Dong Cap Nhat (Live Monitor)\n");
     printf("  " COLOR_CYAN "10." COLOR_RESET "Xuat Anh Chup Tien Trinh Ra File CSV (Export Report)\n");
+    printf("  " COLOR_CYAN "11." COLOR_RESET "Kiem Tra Ket Noi Mang Chi Tiet (Network Socket Inspection)\n");
     printf("  " COLOR_RED  "0." COLOR_RESET " Thoat Chuong Trinh (Exit)\n");
     printf(COLOR_BLUE "+=============================================================+\n" COLOR_RESET);
-    printf(COLOR_BOLD "Lua Chon Cua Ban [0-10]: " COLOR_RESET);
+    printf(COLOR_BOLD "Lua Chon Cua Ban [0-11]: " COLOR_RESET);
 }
 
 void *listener_thread(void *arg) {
