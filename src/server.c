@@ -5,6 +5,8 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <time.h>
+#include <signal.h>
+#include <sys/stat.h>
 #include "protocol.h"
 
 typedef struct {
@@ -29,6 +31,23 @@ void write_log(const char *level, const char *msg) {
 
     fprintf(f, "[%s] [%s] %s\n", time_str, level, msg);
     fclose(f);
+}
+
+void remove_client(int client_id) {
+    pthread_mutex_lock(&lock);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].active && clients[i].id == client_id) {
+            close(clients[i].socket_fd);
+            clients[i].active = 0;
+            client_count--;
+            char log_buf[128];
+            snprintf(log_buf, sizeof(log_buf), "Client ID %d disconnected and cleaned up.", client_id);
+            write_log("INFO", log_buf);
+            printf(COLOR_YELLOW "\n[THONG BAO] Client ID [%d] da ngat ket noi.\n" COLOR_RESET, client_id);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&lock);
 }
 
 void render_master_menu() {
@@ -67,7 +86,7 @@ void *listener_thread(void *arg) {
 
         while (failed_attempts < 3) {
             memset(&auth_req, 0, sizeof(Packet));
-            int n = read(newsock, &auth_req, sizeof(Packet));
+            int n = recv_packet(newsock, &auth_req);
             if (n <= 0) break; // Client mat ket noi
 
             memset(&auth_resp, 0, sizeof(Packet));
@@ -76,12 +95,12 @@ void *listener_thread(void *arg) {
             if (auth_req.command == CMD_AUTH_LOGIN && strcmp(auth_req.payload, AUTH_PASSWORD) == 0) {
                 auth_success = 1;
                 strcpy(auth_resp.payload, "AUTH_OK");
-                write(newsock, &auth_resp, sizeof(Packet));
+                send_packet(newsock, &auth_resp);
                 break;
             } else {
                 failed_attempts++;
                 snprintf(auth_resp.payload, sizeof(auth_resp.payload), "AUTH_FAIL:%d", 3 - failed_attempts);
-                write(newsock, &auth_resp, sizeof(Packet));
+                send_packet(newsock, &auth_resp);
             }
         }
 
@@ -171,6 +190,10 @@ void print_ascii_bar(const char *label, double percentage) {
 }
 
 int main() {
+    signal(SIGPIPE, SIG_IGN);
+    mkdir("logs", 0777);
+    mkdir("reports", 0777);
+
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -199,10 +222,31 @@ int main() {
 
     while (1) {
         render_master_menu();
-        if (scanf("%d", &choice) != 1) break;
+        if (scanf("%d", &choice) != 1) {
+            int c;
+            while ((c = getchar()) != '\n' && c != EOF);
+            continue;
+        }
         getchar();
 
-        if (choice == 0) break;
+        if (choice == 0) {
+            printf(COLOR_YELLOW "\nDang ngat ket noi tat ca Client va dong Master Server...\n" COLOR_RESET);
+            pthread_mutex_lock(&lock);
+            Packet disc_pkt;
+            memset(&disc_pkt, 0, sizeof(Packet));
+            disc_pkt.command = CMD_DISCONNECT;
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (clients[i].active) {
+                    send_packet(clients[i].socket_fd, &disc_pkt);
+                    close(clients[i].socket_fd);
+                    clients[i].active = 0;
+                }
+            }
+            client_count = 0;
+            pthread_mutex_unlock(&lock);
+            write_log("SYSTEM", "Master Server stopped gracefully.");
+            break;
+        }
 
         if (choice == CMD_TOTAL_CLIENTS) {
             printf(COLOR_GREEN "\nTong so Client truc tuyen: %d\n" COLOR_RESET, client_count);
@@ -258,8 +302,12 @@ int main() {
             printf(COLOR_YELLOW "\n[LIVE MONITORING DASHBOARD - CLIENT %d] (Dang theo doi...)\n" COLOR_RESET, target_id);
             for (int i = 0; i < 5; i++) {
                 send_pkt.command = CMD_STREAM_MONITOR;
-                write(target_sock, &send_pkt, sizeof(Packet));
-                read(target_sock, &recv_pkt, sizeof(Packet));
+                if (send_packet(target_sock, &send_pkt) <= 0 ||
+                    recv_packet(target_sock, &recv_pkt) <= 0) {
+                    printf(COLOR_RED "\n[LOI] Mat ket noi voi Client %d trong qua trinh Live Monitor!\n" COLOR_RESET, target_id);
+                    remove_client(target_id);
+                    break;
+                }
 
                 // Xoa man hinh terminal de lam moi giao dien
                 printf("\033[H\033[J");
@@ -301,8 +349,12 @@ int main() {
             }
             continue;
         } else if (choice == CMD_EXPORT_CSV) {
-            write(target_sock, &send_pkt, sizeof(Packet));
-            read(target_sock, &recv_pkt, sizeof(Packet));
+            if (send_packet(target_sock, &send_pkt) <= 0 ||
+                recv_packet(target_sock, &recv_pkt) <= 0) {
+                printf(COLOR_RED "\n[LOI] Mat ket noi voi Client %d khi lay CSV!\n" COLOR_RESET, target_id);
+                remove_client(target_id);
+                continue;
+            }
 
             char report_path[128];
             snprintf(report_path, sizeof(report_path), "reports/client_%d_process_report.csv", target_id);
@@ -316,8 +368,17 @@ int main() {
             continue;
         }
 
-        write(target_sock, &send_pkt, sizeof(Packet));
-        read(target_sock, &recv_pkt, sizeof(Packet));
+        if (send_packet(target_sock, &send_pkt) <= 0) {
+            printf(COLOR_RED "\n[LOI] Khong the gui lenh den Client %d (Client da ngat ket noi).\n" COLOR_RESET, target_id);
+            remove_client(target_id);
+            continue;
+        }
+
+        if (recv_packet(target_sock, &recv_pkt) <= 0) {
+            printf(COLOR_RED "\n[LOI] Client %d da ngat ket noi khi dang cho phan hoi.\n" COLOR_RESET, target_id);
+            remove_client(target_id);
+            continue;
+        }
 
         printf(COLOR_GREEN "\n================ [KET QUA PHAN HOI - CLIENT %d] ================\n" COLOR_RESET, target_id);
         printf("%s\n", recv_pkt.payload);

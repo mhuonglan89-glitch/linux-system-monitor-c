@@ -15,3 +15,9 @@ $(BIN_DIR)/client: $(SRC_DIR)/client.c
 
 clean:
 	rm -rf $(BIN_DIR)/* received_file.bin logs/* reports/*
+
+run-server: $(BIN_DIR)/server
+	./$(BIN_DIR)/server
+
+run-client: $(BIN_DIR)/client
+	./$(BIN_DIR)/client 127.0.0.1

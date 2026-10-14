@@ -95,17 +95,25 @@ void get_system_metrics(char *output, int *is_warning) {
         fclose(fp);
     }
 
-    long u1, n1, s1, i1, w1, q1, sq1;
+    long u1 = 0, n1 = 0, s1 = 0, i1 = 0, w1 = 0, q1 = 0, sq1 = 0;
     fp = fopen("/proc/stat", "r");
-    fscanf(fp, "cpu %ld %ld %ld %ld %ld %ld %ld", &u1, &n1, &s1, &i1, &w1, &q1, &sq1);
-    fclose(fp);
+    if (fp) {
+        if (fscanf(fp, "cpu %ld %ld %ld %ld %ld %ld %ld", &u1, &n1, &s1, &i1, &w1, &q1, &sq1) < 7) {
+            // proc/stat read partial
+        }
+        fclose(fp);
+    }
 
     usleep(300000);
 
-    long u2, n2, s2, i2, w2, q2, sq2;
+    long u2 = 0, n2 = 0, s2 = 0, i2 = 0, w2 = 0, q2 = 0, sq2 = 0;
     fp = fopen("/proc/stat", "r");
-    fscanf(fp, "cpu %ld %ld %ld %ld %ld %ld %ld", &u2, &n2, &s2, &i2, &w2, &q2, &sq2);
-    fclose(fp);
+    if (fp) {
+        if (fscanf(fp, "cpu %ld %ld %ld %ld %ld %ld %ld", &u2, &n2, &s2, &i2, &w2, &q2, &sq2) < 7) {
+            // proc/stat read partial
+        }
+        fclose(fp);
+    }
 
     long active_delta = (u2 + n2 + s2 + q2 + sq2) - (u1 + n1 + s1 + q1 + sq1);
     long total_delta = active_delta + (i2 + w2) - (i1 + w1);
@@ -314,44 +322,66 @@ const char* get_tcp_state_name(int state) {
     }
 }
 
-// Ham doc va phan tich /proc/net/tcp
+// Ham doc va phan tich /proc/net/tcp va /proc/net/udp (Module 3)
 void get_network_sockets(char *output) {
-    FILE *fp = fopen("/proc/net/tcp", "r");
-    if (!fp) {
-        snprintf(output, BUFFER_SIZE, "Khong the doc /proc/net/tcp\n");
-        return;
-    }
-
     snprintf(output, BUFFER_SIZE,
              "+-------+-------------------------+-------------------------+----------------+\n"
              "| PROTO | LOCAL ADDRESS:PORT      | REMOTE ADDRESS:PORT     | STATE          |\n"
              "+-------+-------------------------+-------------------------+----------------+\n");
 
-    char line[256];
-    // Bo qua dong header dau tien cua /proc/net/tcp
-    if (fgets(line, sizeof(line), fp)) {}
+    // Doc /proc/net/tcp
+    FILE *fp = fopen("/proc/net/tcp", "r");
+    if (fp) {
+        char line[256];
+        if (fgets(line, sizeof(line), fp)) {} // Bo qua header
 
-    int count = 0;
-    while (fgets(line, sizeof(line), fp) && count < 20) {
-        char local_hex[64], remote_hex[64];
-        int state = 0;
+        int count = 0;
+        while (fgets(line, sizeof(line), fp) && count < 15) {
+            char local_hex[64], remote_hex[64];
+            int state = 0;
+            if (sscanf(line, "%*d: %63s %63s %X", local_hex, remote_hex, &state) >= 3) {
+                char local_addr[32], remote_addr[32];
+                parse_proc_net_addr(local_hex, local_addr, sizeof(local_addr));
+                parse_proc_net_addr(remote_hex, remote_addr, sizeof(remote_addr));
 
-        // Dinh dang /proc/net/tcp: sl local_address rem_address st ...
-        if (sscanf(line, "%*d: %63s %63s %X", local_hex, remote_hex, &state) >= 3) {
-            char local_addr[32], remote_addr[32];
-            parse_proc_net_addr(local_hex, local_addr, sizeof(local_addr));
-            parse_proc_net_addr(remote_hex, remote_addr, sizeof(remote_addr));
-
-            char row[256];
-            snprintf(row, sizeof(row), "| TCP   | %-23s | %-23s | %-14s |\n",
-                     local_addr, remote_addr, get_tcp_state_name(state));
-            strncat(output, row, BUFFER_SIZE - strlen(output) - 1);
-            count++;
+                char row[256];
+                snprintf(row, sizeof(row), "| TCP   | %-23s | %-23s | %-14s |\n",
+                         local_addr, remote_addr, get_tcp_state_name(state));
+                strncat(output, row, BUFFER_SIZE - strlen(output) - 1);
+                count++;
+            }
         }
+        fclose(fp);
     }
+
+    // Doc /proc/net/udp
+    FILE *fp_udp = fopen("/proc/net/udp", "r");
+    if (fp_udp) {
+        char line[256];
+        if (fgets(line, sizeof(line), fp_udp)) {} // Bo qua header
+
+        int count_udp = 0;
+        while (fgets(line, sizeof(line), fp_udp) && count_udp < 15) {
+            char local_hex[64], remote_hex[64];
+            int state = 0;
+            if (sscanf(line, "%*d: %63s %63s %X", local_hex, remote_hex, &state) >= 3) {
+                char local_addr[32], remote_addr[32];
+                parse_proc_net_addr(local_hex, local_addr, sizeof(local_addr));
+                parse_proc_net_addr(remote_hex, remote_addr, sizeof(remote_addr));
+                const char *st_name = (state == 7) ? "UNCONN" : (state == 1 ? "ESTABLISHED" : "BOUND");
+
+                char row[256];
+                snprintf(row, sizeof(row), "| UDP   | %-23s | %-23s | %-14s |\n",
+                         local_addr, remote_addr, st_name);
+                strncat(output, row, BUFFER_SIZE - strlen(output) - 1);
+                count_udp++;
+            }
+        }
+        fclose(fp_udp);
+    }
+
     strncat(output, "+-------+-------------------------+-------------------------+----------------+\n",
             BUFFER_SIZE - strlen(output) - 1);
-    fclose(fp);
 }
 
 int main(int argc, char *argv[]) {
@@ -383,8 +413,8 @@ int main(int argc, char *argv[]) {
         auth_pkt.command = CMD_AUTH_LOGIN;
         strncpy(auth_pkt.payload, pass_input, sizeof(auth_pkt.payload) - 1);
 
-        write(sock, &auth_pkt, sizeof(Packet));
-        if (read(sock, &auth_res, sizeof(Packet)) <= 0) {
+        send_packet(sock, &auth_pkt);
+        if (recv_packet(sock, &auth_res) <= 0) {
             printf(COLOR_RED "Server da ngat ket noi do xac thuc that bai qua 3 lan!\n" COLOR_RESET);
             close(sock);
             return 1;
@@ -394,13 +424,18 @@ int main(int argc, char *argv[]) {
             printf(COLOR_GREEN "[XAC THUC HOAN TAT] Chuyen sang trang thai lang nghe lenh...\n" COLOR_RESET);
             authenticated = 1;
         } else {
-            printf(COLOR_RED "[XAC THUC THAT BAI] Sai mat khau! (%s con lai)\n" COLOR_RESET, auth_res.payload);
+            int rem = 0;
+            if (sscanf(auth_res.payload, "AUTH_FAIL:%d", &rem) == 1) {
+                printf(COLOR_RED "[XAC THUC THAT BAI] Sai mat khau! (Con lai %d lan thu)\n" COLOR_RESET, rem);
+            } else {
+                printf(COLOR_RED "[XAC THUC THAT BAI] Sai mat khau! (%s)\n" COLOR_RESET, auth_res.payload);
+            }
         }
     }
 
     Packet pkt;
     while (1) {
-        int n = read(sock, &pkt, sizeof(Packet));
+        int n = recv_packet(sock, &pkt);
         if (n <= 0) break;
 
         Packet res;
@@ -408,6 +443,10 @@ int main(int argc, char *argv[]) {
         res.command = pkt.command;
 
         switch (pkt.command) {
+            case CMD_DISCONNECT:
+                printf(COLOR_YELLOW "\n[THONG BAO] Master Server da dong ket noi.\n" COLOR_RESET);
+                close(sock);
+                return 0;
             case CMD_BASIC_INFO:
                 get_system_hardware(res.payload);
                 break;
@@ -452,7 +491,7 @@ int main(int argc, char *argv[]) {
                 get_network_sockets(res.payload);
                 break;
         }
-        write(sock, &res, sizeof(Packet));
+        send_packet(sock, &res);
     }
 
     close(sock);

@@ -46,6 +46,9 @@ enum CommandType {
     CMD_DISCONNECT       = 0
 };
 
+#include <unistd.h>
+#include <sys/types.h>
+
 // Cau truc goi tin mang
 typedef struct {
     int client_id;
@@ -54,5 +57,31 @@ typedef struct {
     int is_warning;
     char payload[BUFFER_SIZE];
 } Packet;
+
+// Ham gui du 100% goi tin Packet qua TCP socket
+static inline ssize_t send_packet(int sock, const Packet *pkt) {
+    size_t total = sizeof(Packet);
+    size_t sent = 0;
+    const char *p = (const char *)pkt;
+    while (sent < total) {
+        ssize_t n = write(sock, p + sent, total - sent);
+        if (n <= 0) return n;
+        sent += n;
+    }
+    return (ssize_t)sent;
+}
+
+// Ham nhan du 100% goi tin Packet qua TCP socket
+static inline ssize_t recv_packet(int sock, Packet *pkt) {
+    size_t total = sizeof(Packet);
+    size_t received = 0;
+    char *p = (char *)pkt;
+    while (received < total) {
+        ssize_t n = read(sock, p + received, total - received);
+        if (n <= 0) return n;
+        received += n;
+    }
+    return (ssize_t)received;
+}
 
 #endif
