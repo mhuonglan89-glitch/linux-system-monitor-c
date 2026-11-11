@@ -65,9 +65,10 @@ void render_master_menu() {
     printf("  " COLOR_CYAN "9." COLOR_RESET " Che Do Dashboard Tu Dong Cap Nhat (Live Monitor)\n");
     printf("  " COLOR_CYAN "10." COLOR_RESET "Xuat Anh Chup Tien Trinh Ra File CSV (Export Report)\n");
     printf("  " COLOR_CYAN "11." COLOR_RESET "Kiem Tra Ket Noi Mang Chi Tiet (Network Socket Inspection)\n");
+    printf("  " COLOR_CYAN "12." COLOR_RESET "Xem He Thong Tep / Phan Vung Dang Mount (Filesystem Info)\n");
     printf("  " COLOR_RED  "0." COLOR_RESET " Thoat Chuong Trinh (Exit)\n");
     printf(COLOR_BLUE "+=============================================================+\n" COLOR_RESET);
-    printf(COLOR_BOLD "Lua Chon Cua Ban [0-11]: " COLOR_RESET);
+    printf(COLOR_BOLD "Lua Chon Cua Ban [0-12]: " COLOR_RESET);
 }
 
 void *listener_thread(void *arg) {
@@ -356,14 +357,22 @@ int main() {
                 continue;
             }
 
-            char report_path[128];
-            snprintf(report_path, sizeof(report_path), "reports/client_%d_process_report.csv", target_id);
+            char report_path[160];
+            char ts[32];
+            time_t now_t = time(NULL);
+            strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", localtime(&now_t));
+            snprintf(report_path, sizeof(report_path), "reports/client_%d_process_%s.csv", target_id, ts);
             FILE *rf = fopen(report_path, "w");
             if (rf) {
                 fputs(recv_pkt.payload, rf);
                 fclose(rf);
                 printf(COLOR_GREEN "\n[THANH CONG] Da xuat bao cao tien trinh: %s\n" COLOR_RESET, report_path);
-                write_log("REPORT", "Process snapshot exported to CSV.");
+                char rep_log[256];
+                snprintf(rep_log, sizeof(rep_log), "Process snapshot of Client %d exported to %s", target_id, report_path);
+                write_log("REPORT", rep_log);
+            } else {
+                printf(COLOR_RED "\n[LOI] Khong the ghi file bao cao: %s\n" COLOR_RESET, report_path);
+                write_log("ERROR", "Cannot write CSV report file.");
             }
             continue;
         }
@@ -378,6 +387,13 @@ int main() {
             printf(COLOR_RED "\n[LOI] Client %d da ngat ket noi khi dang cho phan hoi.\n" COLOR_RESET, target_id);
             remove_client(target_id);
             continue;
+        }
+
+        if (choice == CMD_KILL_PROCESS) {
+            char kill_log[256];
+            snprintf(kill_log, sizeof(kill_log), "Kill request to Client %d (PID input '%.20s') -> %.150s",
+                     target_id, send_pkt.payload, recv_pkt.payload);
+            write_log("KILL", kill_log);
         }
 
         printf(COLOR_GREEN "\n================ [KET QUA PHAN HOI - CLIENT %d] ================\n" COLOR_RESET, target_id);

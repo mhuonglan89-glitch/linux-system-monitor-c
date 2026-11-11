@@ -10,6 +10,8 @@
 #include <ctype.h>
 #include <pwd.h>
 #include <time.h>
+#include <errno.h>
+#include <stdarg.h>
 #include "protocol.h"
 
 void get_system_hardware(char *output) {
@@ -193,90 +195,239 @@ void get_system_metrics(char *output, int *is_warning) {
              disk_total_gb, down_speed, up_speed, sys_cnt, user_cnt, total_cnt);
 }
 
-void get_process_table(char *output) {
+// ===================== MODULE QUAN LY TIEN TRINH / FILESYSTEM / CSV =====================
+
+#define MAX_PROCS 4096
+#define PROC_TABLE_ROWS 25
+
+typedef struct {
+    int pid;
+    int ppid;
+    int threads;
+    int uid;
+    long vmrss;          // kB
+    char state[8];
+    char name[64];
+} ProcInfo;
+
+// Ghi noi tiep vao cuoi chuoi output (an toan voi BUFFER_SIZE)
+static void append_fmt(char *out, const char *fmt, ...) {
+    size_t len = strlen(out);
+    if (len >= BUFFER_SIZE - 1) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(out + len, BUFFER_SIZE - len, fmt, ap);
+    va_end(ap);
+}
+
+static void uid_to_name(int uid, char *buf, size_t len) {
+    struct passwd *pwd = getpwuid(uid);
+    if (pwd) snprintf(buf, len, "%s", pwd->pw_name);
+    else snprintf(buf, len, "%d", uid);
+}
+
+// Doc /proc/[PID]/status cua tat ca tien trinh vao mang ProcInfo
+static int collect_processes(ProcInfo *list, int max) {
     DIR *d = opendir("/proc");
-    if (!d) {
-        strcpy(output, "Khong the mo /proc");
-        return;
-    }
+    if (!d) return -1;
 
-    snprintf(output, BUFFER_SIZE,
-             "+--------+---------------+--------+------------+----------------------+\n"
-             "| %-6s | %-13s | %-6s | %-10s | %-20s |\n"
-             "+--------+---------------+--------+------------+----------------------+\n",
-             "PID", "USER", "STATE", "MEM(kB)", "COMMAND");
-
+    int n = 0;
     struct dirent *de;
-    int count = 0;
-    while ((de = readdir(d)) != NULL && count < 25) {
-        if (isdigit(de->d_name[0])) {
-            char path[512];
-            snprintf(path, sizeof(path), "/proc/%s/status", de->d_name);
-            FILE *fp = fopen(path, "r");
-            if (fp) {
-                char line[256], name[128] = "", state[16] = "", user[64] = "root";
-                long vmrss = 0;
-                int uid = 0;
-                while (fgets(line, sizeof(line), fp)) {
-                    if (strncmp(line, "Name:", 5) == 0) sscanf(line, "Name:\t%127s", name);
-                    if (strncmp(line, "State:", 6) == 0) sscanf(line, "State:\t%15s", state);
-                    if (strncmp(line, "VmRSS:", 6) == 0) sscanf(line, "VmRSS:\t%ld kB", &vmrss);
-                    if (strncmp(line, "Uid:", 4) == 0) sscanf(line, "Uid:\t%d", &uid);
-                }
-                fclose(fp);
+    while ((de = readdir(d)) != NULL && n < max) {
+        if (!isdigit((unsigned char)de->d_name[0])) continue;
 
-                struct passwd *pwd = getpwuid(uid);
-                if (pwd) strncpy(user, pwd->pw_name, sizeof(user) - 1);
+        char path[512];
+        snprintf(path, sizeof(path), "/proc/%s/status", de->d_name);
+        FILE *fp = fopen(path, "r");
+        if (!fp) continue;   // tien trinh vua ket thuc
 
-                char row[512];
-                snprintf(row, sizeof(row), "| %-6s | %-13s | %-6s | %-10ld | %-20s |\n",
-                         de->d_name, user, state, vmrss, name);
-                strncat(output, row, BUFFER_SIZE - strlen(output) - 1);
-                count++;
+        ProcInfo *p = &list[n];
+        memset(p, 0, sizeof(*p));
+        p->pid = atoi(de->d_name);
+        strcpy(p->state, "?");
+
+        char line[256];
+        while (fgets(line, sizeof(line), fp)) {
+            if (strncmp(line, "Name:", 5) == 0) {
+                char *v = line + 5;
+                while (*v == ' ' || *v == '\t') v++;
+                v[strcspn(v, "\r\n")] = 0;
+                snprintf(p->name, sizeof(p->name), "%s", v);
+            } else if (strncmp(line, "State:", 6) == 0) {
+                sscanf(line, "State:\t%7s", p->state);
+            } else if (strncmp(line, "PPid:", 5) == 0) {
+                sscanf(line, "PPid:\t%d", &p->ppid);
+            } else if (strncmp(line, "Threads:", 8) == 0) {
+                sscanf(line, "Threads:\t%d", &p->threads);
+            } else if (strncmp(line, "VmRSS:", 6) == 0) {
+                sscanf(line, "VmRSS:\t%ld", &p->vmrss);
+            } else if (strncmp(line, "Uid:", 4) == 0) {
+                sscanf(line, "Uid:\t%d", &p->uid);
             }
         }
+        fclose(fp);
+        n++;
     }
-    strncat(output, "+--------+---------------+--------+------------+----------------------+\n",
-            BUFFER_SIZE - strlen(output) - 1);
     closedir(d);
+    return n;
+}
+
+// Sap xep giam dan theo bo nho RSS, bang nhau thi theo PID tang dan
+static int cmp_proc_mem(const void *a, const void *b) {
+    const ProcInfo *x = a, *y = b;
+    if (y->vmrss != x->vmrss) return (y->vmrss > x->vmrss) ? 1 : -1;
+    return x->pid - y->pid;
+}
+
+void get_process_table(char *output) {
+    ProcInfo *list = malloc(sizeof(ProcInfo) * MAX_PROCS);
+    if (!list) { strcpy(output, "Khong du bo nho."); return; }
+    int n = collect_processes(list, MAX_PROCS);
+    if (n < 0) {
+        strcpy(output, "Khong the mo /proc");
+        free(list);
+        return;
+    }
+    qsort(list, n, sizeof(ProcInfo), cmp_proc_mem);
+
+    const char *sep = "+--------+--------+---------------+-------+-----+------------+----------------------+\n";
+    output[0] = '\0';
+    append_fmt(output, "Top %d tien trinh dung nhieu RAM nhat (tong %d tien trinh)\n",
+               n < PROC_TABLE_ROWS ? n : PROC_TABLE_ROWS, n);
+    append_fmt(output, "%s", sep);
+    append_fmt(output, "| %-6s | %-6s | %-13s | %-5s | %-3s | %-10s | %-20s |\n",
+               "PID", "PPID", "USER", "STATE", "THR", "MEM(kB)", "COMMAND");
+    append_fmt(output, "%s", sep);
+    for (int i = 0; i < n && i < PROC_TABLE_ROWS; i++) {
+        char user[64];
+        uid_to_name(list[i].uid, user, sizeof(user));
+        append_fmt(output, "| %-6d | %-6d | %-13.13s | %-5s | %-3d | %-10ld | %-20.20s |\n",
+                   list[i].pid, list[i].ppid, user, list[i].state,
+                   list[i].threads, list[i].vmrss, list[i].name);
+    }
+    append_fmt(output, "%s", sep);
+    free(list);
+}
+
+// Boc gia tri CSV theo RFC 4180 (gap dau phay / dau nhay kep trong ten lenh)
+static void csv_quote(const char *in, char *out, size_t len) {
+    size_t j = 0;
+    if (j < len - 1) out[j++] = '"';
+    for (size_t i = 0; in[i] && j < len - 2; i++) {
+        if (in[i] == '"') out[j++] = '"';
+        out[j++] = in[i];
+    }
+    out[j++] = '"';
+    out[j] = '\0';
 }
 
 void get_process_csv(char *output) {
-    DIR *d = opendir("/proc");
-    if (!d) return;
+    ProcInfo *list = malloc(sizeof(ProcInfo) * MAX_PROCS);
+    if (!list) { strcpy(output, "Khong du bo nho."); return; }
+    int n = collect_processes(list, MAX_PROCS);
+    if (n < 0) { free(list); return; }
+    qsort(list, n, sizeof(ProcInfo), cmp_proc_mem);
 
-    snprintf(output, BUFFER_SIZE, "PID,USER,STATE,MEMORY_KB,COMMAND\n");
-    struct dirent *de;
-    int count = 0;
-    while ((de = readdir(d)) != NULL && count < 50) {
-        if (isdigit(de->d_name[0])) {
-            char path[512];
-            snprintf(path, sizeof(path), "/proc/%s/status", de->d_name);
-            FILE *fp = fopen(path, "r");
-            if (fp) {
-                char line[256], name[128] = "", state[16] = "", user[64] = "root";
-                long vmrss = 0;
-                int uid = 0;
-                while (fgets(line, sizeof(line), fp)) {
-                    if (strncmp(line, "Name:", 5) == 0) sscanf(line, "Name:\t%127s", name);
-                    if (strncmp(line, "State:", 6) == 0) sscanf(line, "State:\t%15s", state);
-                    if (strncmp(line, "VmRSS:", 6) == 0) sscanf(line, "VmRSS:\t%ld kB", &vmrss);
-                    if (strncmp(line, "Uid:", 4) == 0) sscanf(line, "Uid:\t%d", &uid);
-                }
-                fclose(fp);
+    char ts[32];
+    time_t now = time(NULL);
+    strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", localtime(&now));
 
-                struct passwd *pwd = getpwuid(uid);
-                if (pwd) strncpy(user, pwd->pw_name, sizeof(user) - 1);
-
-                char row[512];
-                snprintf(row, sizeof(row), "%s,%s,%s,%ld,%s\n", de->d_name, user, state, vmrss, name);
-                strncat(output, row, BUFFER_SIZE - strlen(output) - 1);
-                count++;
-            }
-        }
+    output[0] = '\0';
+    append_fmt(output, "TIMESTAMP,PID,PPID,USER,STATE,THREADS,MEMORY_KB,COMMAND\n");
+    for (int i = 0; i < n; i++) {
+        if (strlen(output) + 256 >= BUFFER_SIZE) break;   // tranh tran goi tin
+        char user[64], user_q[140], cmd_q[140];
+        uid_to_name(list[i].uid, user, sizeof(user));
+        csv_quote(user, user_q, sizeof(user_q));
+        csv_quote(list[i].name, cmd_q, sizeof(cmd_q));
+        append_fmt(output, "%s,%d,%d,%s,%s,%d,%ld,%s\n",
+                   ts, list[i].pid, list[i].ppid, user_q, list[i].state,
+                   list[i].threads, list[i].vmrss, cmd_q);
     }
-    closedir(d);
+    free(list);
 }
+
+// Tieu diet tien trinh bang SIGKILL, co kiem tra dau vao & bao ve he thong
+void kill_process_safe(const char *input, char *output) {
+    char *end = NULL;
+    errno = 0;
+    long v = strtol(input, &end, 10);
+    while (end && (*end == ' ' || *end == '\t')) end++;
+
+    if (input[0] == '\0' || end == input || (end && *end != '\0') || errno != 0) {
+        snprintf(output, BUFFER_SIZE, "Loi: PID khong hop le ('%s'). Chi nhap so nguyen duong.", input);
+        return;
+    }
+    if (v <= 1) {
+        snprintf(output, BUFFER_SIZE, "Tu choi: PID %ld bi cam (0, 1 hoac am co the ha toan he thong).", v);
+        return;
+    }
+    if (v == (long)getpid()) {
+        snprintf(output, BUFFER_SIZE, "Tu choi: PID %ld la chinh tien trinh Client Agent.", v);
+        return;
+    }
+
+    int pid = (int)v;
+    // Lay ten tien trinh truoc khi kill de ghi vao ket qua
+    char name[64] = "unknown", path[64];
+    snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+    FILE *fp = fopen(path, "r");
+    if (fp) {
+        if (fgets(name, sizeof(name), fp)) name[strcspn(name, "\r\n")] = 0;
+        fclose(fp);
+    }
+
+    if (kill(pid, SIGKILL) == 0) {
+        snprintf(output, BUFFER_SIZE, "Da tieu diet tien trinh PID: %d (%s) thanh cong (SIGKILL).", pid, name);
+    } else if (errno == ESRCH) {
+        snprintf(output, BUFFER_SIZE, "Loi: khong ton tai tien trinh co PID %d.", pid);
+    } else if (errno == EPERM) {
+        snprintf(output, BUFFER_SIZE, "Loi: khong du quyen tieu diet PID %d (%s). Chay Client bang sudo.", pid, name);
+    } else {
+        snprintf(output, BUFFER_SIZE, "Loi khi tieu diet PID %d: %s", pid, strerror(errno));
+    }
+}
+
+// Liet ke cac phan vung that dang mount (doc /proc/mounts + statvfs)
+void get_fs_info(char *output) {
+    FILE *fp = fopen("/proc/mounts", "r");
+    if (!fp) { strcpy(output, "Khong the mo /proc/mounts"); return; }
+
+    const char *sep = "+----------------------+----------------------+----------+----------+----------+-------+--------+\n";
+    output[0] = '\0';
+    append_fmt(output, "%s", sep);
+    append_fmt(output, "| %-20s | %-20s | %-8s | %-8s | %-8s | %-5s | %-6s |\n",
+               "MOUNT POINT", "DEVICE", "TYPE", "TOTAL GB", "USED GB", "USE%", "INODE%");
+    append_fmt(output, "%s", sep);
+
+    char line[512];
+    int shown = 0;
+    while (fgets(line, sizeof(line), fp) && shown < 20) {
+        char dev[128], mnt[256], type[32];
+        if (sscanf(line, "%127s %255s %31s", dev, mnt, type) != 3) continue;
+        if (dev[0] != '/') continue;                         // bo qua proc, sysfs, tmpfs...
+        if (strcmp(type, "squashfs") == 0) continue;         // bo qua snap (read-only)
+
+        struct statvfs vfs;
+        if (statvfs(mnt, &vfs) != 0 || vfs.f_blocks == 0) continue;
+
+        double total = (double)vfs.f_blocks * vfs.f_frsize / (1024.0 * 1024 * 1024);
+        double used  = (double)(vfs.f_blocks - vfs.f_bfree) * vfs.f_frsize / (1024.0 * 1024 * 1024);
+        double avail = (double)vfs.f_bavail * vfs.f_frsize / (1024.0 * 1024 * 1024);
+        double use_pct = (used + avail) > 0 ? used / (used + avail) * 100.0 : 0.0;   // cong thuc giong lenh df
+        double inode_pct = vfs.f_files > 0
+            ? (double)(vfs.f_files - vfs.f_ffree) / vfs.f_files * 100.0 : 0.0;
+
+        append_fmt(output, "| %-20.20s | %-20.20s | %-8.8s | %8.2f | %8.2f | %4.1f%% | %5.1f%% |\n",
+                   mnt, dev, type, total, used, use_pct, inode_pct);
+        shown++;
+    }
+    fclose(fp);
+    append_fmt(output, "%s", sep);
+    if (shown == 0) strcpy(output, "Khong tim thay phan vung nao.");
+}
+
+// =========================================================================================
 
 void execute_shell(const char *cmd, char *output) {
     FILE *fp = popen(cmd, "r");
@@ -460,15 +611,9 @@ int main(int argc, char *argv[]) {
             case CMD_EXPORT_CSV:
                 get_process_csv(res.payload);
                 break;
-            case CMD_KILL_PROCESS: {
-                int pid = atoi(pkt.payload);
-                if (kill(pid, SIGKILL) == 0) {
-                    snprintf(res.payload, BUFFER_SIZE, "Da tieu diet tien trinh PID: %d thanh cong.", pid);
-                } else {
-                    snprintf(res.payload, BUFFER_SIZE, "Loi khi tieu diet PID: %d (Kiem tra quyen sudo).", pid);
-                }
+            case CMD_KILL_PROCESS:
+                kill_process_safe(pkt.payload, res.payload);
                 break;
-            }
             case CMD_SEND_ALERT:
                 printf(COLOR_RED "\n[ALERT FROM MASTER SERVER]: %s\n" COLOR_RESET, pkt.payload);
                 snprintf(res.payload, BUFFER_SIZE, "Client da tiep nhan thong bao.");
@@ -489,6 +634,9 @@ int main(int argc, char *argv[]) {
             }
             case CMD_NET_INSPECT:
                 get_network_sockets(res.payload);
+                break;
+            case CMD_FS_INFO:
+                get_fs_info(res.payload);
                 break;
         }
         send_packet(sock, &res);
