@@ -31,6 +31,9 @@
 // Mã lệnh kiểm tra mạng
 #define CMD_NET_INSPECT      11
 
+// Ma lenh xem he thong tep / cac phan vung dang mount (Module Kiet)
+#define CMD_FS_INFO          12
+
 // Ma lenh dieu khien giua Server va Client
 enum CommandType {
     CMD_TOTAL_CLIENTS    = 1,
